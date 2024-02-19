@@ -6,4 +6,3 @@ services:
       dockerfile: docker/Dockerfile
     env_file:
       - .env
-    #command: bot
