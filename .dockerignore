@@ -1,0 +1,24 @@
+# Archivos y directorios generados por la compilación
+/target
+**/*.rs.bk
+
+# Archivos y directorios generados por Cargo
+Cargo.lock
+
+# Archivos y directorios generados por herramientas de Rust
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*$py.class
+
+# Archivos y directorios generados por el sistema operativo
+.DS_Store
+Thumbs.db
+
+# Archivos y directorios generados por el control de versiones
+.git
+.gitignore
+.vscode
+
+docker-compose.yml

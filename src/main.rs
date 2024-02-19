@@ -1,31 +1,24 @@
 use dotenv::dotenv;
-use serenity::all::Embed;
+
 use std::{collections::HashMap, env, error::Error};
 
-use serenity::async_trait;
-use serenity::model::channel::Message;
-use serenity::model::gateway::Ready;
-use serenity::prelude::*;
-
 use serenity::{
+    async_trait,
     builder::{CreateEmbed, CreateMessage},
-    model::{id::ChannelId, Timestamp},
+    http::Http,
+    model::{channel::Message, gateway::Ready, id::ChannelId},
     prelude::*,
 };
 
 use reqwest;
 
-use serde::de::DeserializeOwned;
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{de::DeserializeOwned, Deserialize};
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{Duration as ChronoDuration, Local, NaiveDate, Timelike};
 
-struct Handler;
+use tokio::time::sleep;
 
-const KATO_ID: u64 = 344959298205384716;
-const LEX_ID: u64 = 901606283814256690;
-pub const CHANNEL_TEST: u64 = 1206401965450338345;
+struct Handler {}
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -42,7 +35,7 @@ impl EventHandler for Handler {
             }
         } */
 
-        if msg.author.id == LEX_ID {
+        /* if msg.author.id == LEX_ID {
             if let Err(why) = msg
                 .channel_id
                 .say(&ctx.http, "Man Lexan, cálmese, es solo un ARAM! 🙏")
@@ -50,15 +43,13 @@ impl EventHandler for Handler {
             {
                 println!("Error enviando mensaje: {:?}", why);
             }
-        }
+        } */
     }
 
     async fn ready(&self, _: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
     }
 }
-
-type JSONResponse = HashMap<String, Value>;
 
 async fn fetch<T: DeserializeOwned>(url: &str) -> Result<T, Box<dyn Error>> {
     let response = reqwest::get(url).await?.json::<T>().await?;
@@ -113,46 +104,28 @@ async fn fetch_races(url: &str) -> Result<Vec<Race>, Box<dyn Error>> {
     Ok(response.MRData.RaceTable.Races)
 }
 
-fn filter_next_race(races: Vec<Race>) -> Result<Option<Race>, Box<dyn Error>> {
-    let today = Utc::today().naive_utc();
+fn filter_next_race(races: Vec<Race>) -> Race {
+    let today = Local::now().date_naive();
 
     let next_race = races
         .into_iter()
         .filter_map(|race| {
-            let race_date = NaiveDate::parse_from_str(&race.date, "%Y-%m-%d").ok()?;
-            (race_date > today).then(|| race)
-        })
-        .min_by_key(|race| NaiveDate::parse_from_str(&race.date, "%Y-%m-%d").unwrap());
+            let race_date = NaiveDate::parse_from_str(&race.date, "%Y-%m-%d").unwrap();
 
-    Ok(next_race)
+            if race_date > today {
+                Some(race)
+            } else {
+                None
+            }
+        })
+        .min_by_key(|race| NaiveDate::parse_from_str(&race.date, "%Y-%m-%d").unwrap())
+        .unwrap();
+
+    next_race
 }
 
 fn generate_google_maps_url(lat: &str, long: &str) -> String {
     format!("https://www.google.com/maps/?q={},{}", lat, long)
-}
-
-fn generate_announcement(race: &Race) -> String {
-    format!(
-        "
-    **Temporada:** {}\n
-    **Ronda:** {}\n
-    **Nombre de la carrera:** {}\n
-    **Circuito:** {}\n
-    **Localidad:** {}\n
-    **País:** {}\n
-    **Fecha:** {}\n
-    **URL de la carrera:** [Link]({})\n
-    **URL del circuito:** [Link]({})",
-        race.season,
-        race.round,
-        race.raceName,
-        race.Circuit.circuitName,
-        race.Circuit.Location.locality,
-        race.Circuit.Location.country,
-        race.date,
-        race.url,
-        race.Circuit.url
-    )
 }
 
 fn get_country_code(country_name: &str) -> Option<String> {
@@ -186,26 +159,32 @@ fn get_country_code(country_name: &str) -> Option<String> {
     map.get(country_name).cloned()
 }
 
-fn create_message_next_race(race: &Race) -> CreateMessage {
+fn create_message_next_race(race: &Race, remaining_days: i64, f1_role: u64) -> CreateMessage {
     let country_code = get_country_code(&race.Circuit.Location.country).unwrap();
     let flag_url = format!("https://flagcdn.com/h120/{}.png", country_code);
-    let date = match race.date.parse::<DateTime<Utc>>() {
-        Ok(date) => date,
-        Err(_) => Utc::now(),
-    };
 
     let embed = CreateEmbed::new()
         .title("🏎🏁 Proxima carrera F1 🏎🏁")
-        .description("¡Preparate!, porque falta poco")
+        .description("¡Prepárate!, porque falta poco")
         .color(0xff0000)
         .field("Carrera", &race.raceName, true)
         .field("Circuito", &race.Circuit.circuitName, true)
         .field("Nombre del circuito", &race.Circuit.circuitName, false)
-        .field("Fecha", &race.date, true)
+        //.field("Fecha", &race.date, true)
+        .field(
+            "Días restantes",
+            format!("{} dia(s)", &remaining_days.to_string()),
+            true,
+        )
         .image(&flag_url)
         .thumbnail(&flag_url);
 
-    let message = CreateMessage::new().embed(embed);
+    let message = CreateMessage::new()
+        .content(format!(
+            "Oigan <@&{}> pendejos, ahi les aviso, que viene el FIUUUMMMMM!!!",
+            f1_role
+        ))
+        .embed(embed);
 
     message
 }
@@ -215,27 +194,68 @@ async fn main() {
     dotenv().ok();
 
     let token = env::var("DISCORD_TOKEN").expect("DISCORD_TOKEN not found");
-    let f1_api = env::var("F1_RACES_API").expect("F1_API not found");
+    let f1_api = env::var("F1_RACES_API").expect("Race api endpoint");
+    let kato_id = env::var("KATO_ID").unwrap().parse::<u64>().unwrap();
+    let lex_id = env::var("LEX_ID").unwrap().parse::<u64>().unwrap();
 
-    let intents =
-        GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILD_MESSAGES | GatewayIntents::GUILDS;
+    let main_channel = env::var("MAIN_CHANNEL").unwrap().parse::<u64>().unwrap();
+    let f1_role = env::var("F1_ROLE").unwrap().parse::<u64>().unwrap();
 
-    let mut client = Client::builder(&token, intents)
-        .event_handler(Handler)
-        .await
-        .expect("Err creating client");
+    let channel_id = ChannelId::from(main_channel);
 
-    let races = fetch_races(f1_api.as_str()).await.unwrap();
+    let discord_http_client = Http::new(&token);
 
-    let next_race = filter_next_race(races).unwrap().unwrap();
-    println!("{next_race:?}");
+    /* let intents =
+    GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILD_MESSAGES | GatewayIntents::GUILDS; */
 
-    /* let _ = ChannelId::from(CHANNEL_TEST)
-        .send_message(&client.http, create_message_next_race(&next_race))
+    // DEBUG
+    /* let now = Local::now();
+    let races = fetch_races(&f1_api.as_str()).await.unwrap();
+    let next_race = filter_next_race(races);
+    let next_race_date = NaiveDate::parse_from_str(&next_race.date, "%Y-%m-%d").unwrap();
+    let days_until_next_race = (next_race_date - now.date_naive()).num_days();
+    let _ = channel_id
+        .send_message(
+            &discord_http_client,
+            create_message_next_race(&next_race, days_until_next_race, 1),
+        )
         .await; */
 
-    // start listening for events by starting a single shard
-    if let Err(why) = client.start().await {
-        println!("An error occurred while running the client: {why:?}");
-    }
+    let loop_task = tokio::spawn(async move {
+        loop {
+            let now = Local::now();
+
+            println!("Start SKG BOT current time: {}", now.format("%H:%M:%S"));
+
+            let until_two_pm = if now.hour() < 14 {
+                ChronoDuration::hours(14 - now.hour() as i64)
+            } else {
+                ChronoDuration::hours(24 - now.hour() as i64 + 14)
+            };
+
+            let sleep_duration = std::time::Duration::from_secs(until_two_pm.num_seconds() as u64);
+            sleep(sleep_duration).await;
+
+            let races = fetch_races(&f1_api.as_str()).await.unwrap();
+            let next_race = filter_next_race(races);
+            let next_race_date = NaiveDate::parse_from_str(&next_race.date, "%Y-%m-%d").unwrap();
+            let days_until_next_race = (next_race_date - now.date_naive()).num_days();
+
+            println!("faltan {} para la proxima carrera", &days_until_next_race);
+
+            if [7, 5, 3, 1].contains(&days_until_next_race) {
+                // Send a message
+                let _ = channel_id
+                    .send_message(
+                        &discord_http_client,
+                        create_message_next_race(&next_race, days_until_next_race, f1_role),
+                    )
+                    .await;
+            }
+        }
+    });
+
+    // Wait for the loop task to finish (it never does)
+    println!("The loop will start now!");
+    loop_task.await.unwrap();
 }
